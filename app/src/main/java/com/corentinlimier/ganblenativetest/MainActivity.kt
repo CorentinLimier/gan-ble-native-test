@@ -12,16 +12,12 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import java.text.SimpleDateFormat
-import java.util.Locale
 import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
@@ -30,40 +26,37 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.corentinlimier.ganblenativetest.databinding.ActivityMainBinding
-import java.util.Date
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Minimal native BLE test harness for the GAN cube Android connectivity
+ * Native BLE test harness for the GAN cube Android connectivity
  * investigation (see https://github.com/CorentinLimier/gan-ble-raw-logger).
  *
- * The Web Bluetooth-based tool in that repo intermittently hangs forever on
- * readValue()/startNotifications() on one specific Android phone, and
- * retrying (even many times) doesn't always recover it. Web Bluetooth does
- * not expose several native Android BLE controls that might matter here:
- * connection priority, MTU negotiation, GATT cache refresh, and autoConnect
- * mode. This app connects directly via BluetoothGatt (no scanning — same
- * known MAC address every time) with each of those as an independent
- * on/off toggle, so you can manually run repeated connect attempts with
- * different combinations and compare how often each one hangs.
+ * Connects directly via BluetoothGatt (by MAC, or pick one from a scan),
+ * with native-only BLE controls (connection priority, MTU, GATT cache
+ * refresh, autoConnect) as independent toggles. Once connected and
+ * notifications are enabled, the UI switches to a minimal view: just
+ * Disconnect/Reset gyro/Reset cube and a live, colored 3D cube rendered
+ * from the GAN cube's own decoded BLE data (GYRO orientation, MOVE/
+ * FACELETS state) — not the phone's own sensors.
  *
- * This is deliberately NOT automated with a retry loop (unlike the web
- * tool) — tap Connect, note the result, Disconnect, repeat with different
- * toggle combinations, so each attempt is a clean, comparable data point.
+ * All logging goes to Logcat only (tag "GanBleNativeTest") — nothing is
+ * rendered in-app, since that was the source of a real performance
+ * problem (see commit history) and isn't needed once decoding/rendering
+ * work.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var bluetoothGatt: BluetoothGatt? = null
     private var stateChar: BluetoothGattCharacteristic? = null
+    private var commandChar: BluetoothGattCharacteristic? = null
     private var keyIv: Pair<ByteArray, ByteArray>? = null
+    private var matchedGen: String? = null
     private var notifyCount = 0
-
-    private val logBuffer = StringBuilder()
-    private var logLineCount = 0
 
     private var pendingAction: (() -> Unit)? = null
 
@@ -73,6 +66,26 @@ class MainActivity : AppCompatActivity() {
     private val scanHandler = Handler(Looper.getMainLooper())
     private val foundDevices = LinkedHashMap<String, FoundDevice>()
     private lateinit var deviceListAdapter: ArrayAdapter<String>
+
+    // Decoded cube state (Gen4 only — see tryHandleGen4Event). Mutated by
+    // FACELETS sync events (overwritten wholesale) and MOVE events (replayed
+    // via the same Kociemba cubie move tables as the web tool).
+    private data class CubeState(val cp: IntArray, val co: IntArray, val ep: IntArray, val eo: IntArray)
+
+    private fun solvedCubeState() = CubeState(
+        intArrayOf(0, 1, 2, 3, 4, 5, 6, 7),
+        intArrayOf(0, 0, 0, 0, 0, 0, 0, 0),
+        intArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+        intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    )
+
+    private var cubeState = solvedCubeState()
+    private var cubeStateSynced = false
+
+    // Gyro orientation re-anchoring for the Reset gyro button: null means
+    // "not yet established" — the next GYRO sample becomes the new home pose.
+    private data class Quat(val x: Float, val y: Float, val z: Float, val w: Float)
+    private var gyroBasis: Quat? = null
 
     companion object {
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -109,12 +122,93 @@ class MainActivity : AppCompatActivity() {
         private val BASE_IV =
             intArrayOf(0x11, 0x03, 0x32, 0x28, 0x21, 0x01, 0x76, 0x27, 0x20, 0x95, 0x78, 0x14, 0x32, 0x12, 0x02, 0x43)
                 .map { it.toByte() }.toByteArray()
+
+        // -------------------------------------------------------------------
+        // Kociemba facelets conversion + cubie move tables — direct ports of
+        // the already-validated logic in the web tool's protocol.js (cross-
+        // checked there against gan-web-bluetooth's own documented example).
+        // Corner/edge numbering: corners 0-7 = URF UFL ULB UBR DFR DLF DBL
+        // DRB; edges 0-11 = UR UF UL UB DR DF DL DB FR FL BL BR.
+        // -------------------------------------------------------------------
+
+        private val CORNER_FACELET_MAP = arrayOf(
+            intArrayOf(8, 9, 20), intArrayOf(6, 18, 38), intArrayOf(0, 36, 47), intArrayOf(2, 45, 11),
+            intArrayOf(29, 26, 15), intArrayOf(27, 44, 24), intArrayOf(33, 53, 42), intArrayOf(35, 17, 51)
+        )
+        private val EDGE_FACELET_MAP = arrayOf(
+            intArrayOf(5, 10), intArrayOf(7, 19), intArrayOf(3, 37), intArrayOf(1, 46),
+            intArrayOf(32, 16), intArrayOf(28, 25), intArrayOf(30, 43), intArrayOf(34, 52),
+            intArrayOf(23, 12), intArrayOf(21, 41), intArrayOf(50, 39), intArrayOf(48, 14)
+        )
+
+        fun toKociembaFacelets(cp: IntArray, co: IntArray, ep: IntArray, eo: IntArray): String {
+            val faces = "URFDLB"
+            val facelets = CharArray(54)
+            for (i in 0 until 54) facelets[i] = faces[i / 9]
+            for (c in 0 until 8) {
+                for (p in 0 until 3) {
+                    facelets[CORNER_FACELET_MAP[c][(p + co[c]) % 3]] = faces[CORNER_FACELET_MAP[cp[c]][p] / 9]
+                }
+            }
+            for (e in 0 until 12) {
+                for (p in 0 until 2) {
+                    facelets[EDGE_FACELET_MAP[e][(p + eo[e]) % 2]] = faces[EDGE_FACELET_MAP[ep[e]][p] / 9]
+                }
+            }
+            return String(facelets)
+        }
+
+        // Cubie-level move tables for a single CW quarter turn, face order
+        // 0..5 = U R F D L B (matches the GAN protocol's own face numbering).
+        private val MOVE_CP = arrayOf(
+            intArrayOf(3, 0, 1, 2, 4, 5, 6, 7), intArrayOf(4, 1, 2, 0, 7, 5, 6, 3),
+            intArrayOf(1, 5, 2, 3, 0, 4, 6, 7), intArrayOf(0, 1, 2, 3, 5, 6, 7, 4),
+            intArrayOf(0, 2, 6, 3, 4, 1, 5, 7), intArrayOf(0, 1, 3, 7, 4, 5, 2, 6)
+        )
+        private val MOVE_CO = arrayOf(
+            intArrayOf(0, 0, 0, 0, 0, 0, 0, 0), intArrayOf(2, 0, 0, 1, 1, 0, 0, 2),
+            intArrayOf(1, 2, 0, 0, 2, 1, 0, 0), intArrayOf(0, 0, 0, 0, 0, 0, 0, 0),
+            intArrayOf(0, 1, 2, 0, 0, 2, 1, 0), intArrayOf(0, 0, 1, 2, 0, 0, 2, 1)
+        )
+        private val MOVE_EP = arrayOf(
+            intArrayOf(3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11), intArrayOf(8, 1, 2, 3, 11, 5, 6, 7, 4, 9, 10, 0),
+            intArrayOf(0, 9, 2, 3, 4, 8, 6, 7, 1, 5, 10, 11), intArrayOf(0, 1, 2, 3, 5, 6, 7, 4, 8, 9, 10, 11),
+            intArrayOf(0, 1, 10, 3, 4, 5, 9, 7, 8, 2, 6, 11), intArrayOf(0, 1, 2, 11, 4, 5, 6, 10, 8, 9, 3, 7)
+        )
+        private val MOVE_EO = arrayOf(
+            intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            intArrayOf(0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0), intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), intArrayOf(0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1)
+        )
+
+        private fun applyMoveOnce(state: CubeState, face: Int): CubeState {
+            val mcp = MOVE_CP[face]; val mco = MOVE_CO[face]; val mep = MOVE_EP[face]; val meo = MOVE_EO[face]
+            val newCp = IntArray(8); val newCo = IntArray(8)
+            for (i in 0 until 8) {
+                newCp[i] = state.cp[mcp[i]]
+                newCo[i] = (state.co[mcp[i]] + mco[i]) % 3
+            }
+            val newEp = IntArray(12); val newEo = IntArray(12)
+            for (i in 0 until 12) {
+                newEp[i] = state.ep[mep[i]]
+                newEo[i] = (state.eo[mep[i]] + meo[i]) % 2
+            }
+            return CubeState(newCp, newCo, newEp, newEo)
+        }
+
+        /** direction: 0 = CW (one quarter turn), 1 = CCW (applied as three CW turns). */
+        fun applyMove(state: CubeState, face: Int, direction: Int): CubeState {
+            var result = state
+            val times = if (direction == 0) 1 else 3
+            repeat(times) { result = applyMoveOnce(result, face) }
+            return result
+        }
     }
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             if (results.values.all { it }) {
-                log("Permissions granted.", "ok")
+                log("Permissions granted.")
                 pendingAction?.invoke()
             } else {
                 log("Permissions denied: $results", "error")
@@ -133,7 +227,7 @@ class MainActivity : AppCompatActivity() {
             val selected = foundDevices.values.sortedByDescending { it.rssi }.getOrNull(position)
             if (selected != null) {
                 binding.etMac.setText(selected.address)
-                log("Selected from scan list: ${selected.name ?: "(unknown name)"}  ${selected.address}  ${selected.rssi} dBm", "ok")
+                log("Selected from scan list: ${selected.name ?: "(unknown name)"}  ${selected.address}  ${selected.rssi} dBm")
                 if (scanning) stopScan()
             }
         }
@@ -141,18 +235,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnScan.setOnClickListener { onScanClicked() }
         binding.btnConnect.setOnClickListener { onConnectClicked() }
         binding.btnDisconnect.setOnClickListener { onDisconnectClicked() }
-        binding.btnClear.setOnClickListener {
-            logBuffer.clear(); logLineCount = 0; binding.tvLog.text = ""
-        }
-        binding.btnCopy.setOnClickListener { copyLogToClipboard() }
-        binding.swShowInApp.setOnCheckedChangeListener { _, isChecked ->
-            // Catch up the TextView with whatever accumulated while display was off.
-            if (isChecked) {
-                binding.tvLog.text = logBuffer.toString()
-                binding.scrollLog.post { binding.scrollLog.fullScroll(View.FOCUS_DOWN) }
-            }
-        }
+        binding.btnResetGyro.setOnClickListener { onResetGyroClicked() }
+        binding.btnResetCube.setOnClickListener { onResetCubeClicked() }
 
+        binding.cubeView.setFacelets(CubeView.SOLVED_FACELETS)
         log("Ready. Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), device: ${Build.MODEL}")
     }
 
@@ -160,6 +246,21 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         if (scanning) stopScan()
         closeGatt()
+    }
+
+    // -----------------------------------------------------------------------
+    // Connected / disconnected UI mode
+    // -----------------------------------------------------------------------
+
+    private fun setConnectedUiMode(connected: Boolean) {
+        runOnUiThread {
+            binding.preConnectGroup.visibility = if (connected) View.GONE else View.VISIBLE
+            binding.postConnectGroup.visibility = if (connected) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun toast(msg: String) {
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
     }
 
     // -----------------------------------------------------------------------
@@ -215,15 +316,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (bluetoothGatt != null) {
-            log("Note: scanning while a GATT connection is active — this is itself one of the things the web investigation tested (scanning right before connect), worth watching for any effect on the active connection.", "warn")
-        }
-
         foundDevices.clear()
         deviceListAdapter.clear()
         log("Starting BLE scan for every nearby device (auto-stops after 15s)…")
         scanning = true
-        binding.btnScan.text = "Stop scan"
+        runOnUiThread { binding.btnScan.text = "Stop scan" }
 
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanner.startScan(null, settings, leScanCallback)
@@ -236,8 +333,8 @@ class MainActivity : AppCompatActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothManager.adapter?.bluetoothLeScanner?.stopScan(leScanCallback)
         scanning = false
-        binding.btnScan.text = "Scan for devices"
-        log("Scan stopped. ${foundDevices.size} distinct device(s) found.", "ok")
+        runOnUiThread { binding.btnScan.text = "Scan for devices" }
+        log("Scan stopped. ${foundDevices.size} distinct device(s) found.")
     }
 
     private val leScanCallback = object : ScanCallback() {
@@ -248,7 +345,7 @@ class MainActivity : AppCompatActivity() {
             val existing = foundDevices[address]
             if (existing == null) {
                 foundDevices[address] = FoundDevice(address, name, result.rssi)
-                log("Found device: ${name ?: "(unknown name)"}  $address  ${result.rssi} dBm", "evt")
+                log("Found device: ${name ?: "(unknown name)"}  $address  ${result.rssi} dBm")
             } else {
                 existing.rssi = result.rssi
                 if (name != null) existing.name = name
@@ -302,12 +399,20 @@ class MainActivity : AppCompatActivity() {
 
         notifyCount = 0
         stateChar = null
+        commandChar = null
+        matchedGen = null
         keyIv = buildKeyIv(mac)
+        cubeState = solvedCubeState()
+        cubeStateSynced = false
+        gyroBasis = null
+        runOnUiThread { binding.cubeView.setFacelets(CubeView.SOLVED_FACELETS) }
 
         val autoConnect = binding.swAutoConnect.isChecked
         log("connectGatt(autoConnect=$autoConnect, TRANSPORT_LE) to $mac …")
-        binding.tvStatus.text = "Connecting…"
-        binding.btnConnect.isEnabled = false
+        runOnUiThread {
+            binding.tvStatus.text = "Connecting…"
+            binding.btnConnect.isEnabled = false
+        }
 
         bluetoothGatt = device.connectGatt(this, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
@@ -315,10 +420,12 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private fun onDisconnectClicked() {
         closeGatt()
-        binding.btnConnect.isEnabled = true
-        binding.btnDisconnect.isEnabled = false
-        binding.tvStatus.text = "Disconnected"
-        log("Disconnected.", "ok")
+        setConnectedUiMode(false)
+        runOnUiThread {
+            binding.btnConnect.isEnabled = true
+            binding.tvStatus.text = "Disconnected"
+        }
+        log("Disconnected.")
     }
 
     @SuppressLint("MissingPermission")
@@ -339,6 +446,44 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun onResetGyroClicked() {
+        gyroBasis = null
+        log("Gyro orientation reference reset (client-side only, no command sent to the cube).")
+        toast("Gyro reset")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun onResetCubeClicked() {
+        val gatt = bluetoothGatt
+        val cmdChar = commandChar
+        val ki = keyIv
+        if (gatt == null || cmdChar == null || ki == null) {
+            log("Cannot reset cube: not fully connected yet.", "warn")
+            toast("Not connected yet")
+            return
+        }
+        // GAN Gen4 REQUEST_RESET command — tells the cube to treat its CURRENT
+        // physical position as solved. Only meaningful if it's actually solved.
+        val payload = byteArrayOf(
+            0xD2.toByte(), 0x0D, 0x05, 0x39, 0x77, 0x00, 0x00, 0x01,
+            0x23, 0x45, 0x67, 0x89.toByte(), 0xAB.toByte(), 0x00, 0x00, 0x00
+        )
+        val msg = ByteArray(20)
+        System.arraycopy(payload, 0, msg, 0, payload.size)
+        val encrypted = encryptPayload(msg, ki.first, ki.second)
+
+        @Suppress("DEPRECATION")
+        cmdChar.value = encrypted
+        @Suppress("DEPRECATION")
+        val ok = gatt.writeCharacteristic(cmdChar)
+        log("Sent REQUEST_RESET to command characteristic -> $ok")
+        toast(if (ok) "Reset cube command sent" else "Failed to send reset command")
+
+        cubeState = solvedCubeState()
+        cubeStateSynced = true
+        runOnUiThread { binding.cubeView.setFacelets(CubeView.SOLVED_FACELETS) }
+    }
+
     // -----------------------------------------------------------------------
     // GATT callback
     // -----------------------------------------------------------------------
@@ -353,8 +498,7 @@ class MainActivity : AppCompatActivity() {
             )
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    binding.tvStatus.text = "Connected — discovering…"
-                    binding.btnDisconnect.isEnabled = true
+                    runOnUiThread { binding.tvStatus.text = "Connected — discovering…" }
 
                     // refresh()/requestConnectionPriority() have no async callback — safe to
                     // call back-to-back. requestMtu() DOES have one (onMtuChanged), and
@@ -374,9 +518,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    binding.tvStatus.text = "Disconnected"
-                    binding.btnConnect.isEnabled = true
-                    binding.btnDisconnect.isEnabled = false
+                    setConnectedUiMode(false)
+                    runOnUiThread {
+                        binding.tvStatus.text = "Disconnected"
+                        binding.btnConnect.isEnabled = true
+                    }
                 }
             }
         }
@@ -384,8 +530,6 @@ class MainActivity : AppCompatActivity() {
         @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             log("onMtuChanged mtu=$mtu status=$status")
-            // Only call gatt here, now that the MTU request has actually completed —
-            // see the comment in onConnectionStateChange for why this is deferred here.
             if (binding.swRequestMtu.isChecked) {
                 gatt.discoverServices()
             }
@@ -401,7 +545,7 @@ class MainActivity : AppCompatActivity() {
             }
             if (match == null) {
                 log("No known GAN service UUID found among discovered services.", "error")
-                binding.tvStatus.text = "Connected, no GAN service found"
+                runOnUiThread { binding.tvStatus.text = "Connected, no GAN service found" }
                 return
             }
 
@@ -416,7 +560,9 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             stateChar = sChar
-            log("Matched ${match.name}. State characteristic properties: ${describeProps(sChar.properties)}", "ok")
+            matchedGen = match.name
+            commandChar = service.getCharacteristic(UUID.fromString(match.command))
+            log("Matched ${match.name}. State characteristic properties: ${describeProps(sChar.properties)}")
 
             val notifEnabled = gatt.setCharacteristicNotification(sChar, true)
             log("setCharacteristicNotification(true) -> $notifEnabled")
@@ -427,16 +573,20 @@ class MainActivity : AppCompatActivity() {
             }
 
             cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            log("writeDescriptor(CCCD, ENABLE_NOTIFICATION) …")
             val ok = gatt.writeDescriptor(cccd)
-            log("writeDescriptor() call returned $ok (result arrives async via onDescriptorWrite)")
-            binding.tvStatus.text = "Connected, enabling notifications…"
+            log("writeDescriptor(CCCD, ENABLE_NOTIFICATION) call returned $ok (result arrives async via onDescriptorWrite)")
+            runOnUiThread { binding.tvStatus.text = "Connected, enabling notifications…" }
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             val success = status == BluetoothGatt.GATT_SUCCESS
             log("onDescriptorWrite status=$status (${if (success) "SUCCESS" else "FAILED"})", if (success) "ok" else "error")
-            binding.tvStatus.text = if (success) "Connected, notifications enabled — turn a face" else "Connected, notify FAILED"
+            if (success) {
+                setConnectedUiMode(true)
+                toast("Connected — turn a face")
+            } else {
+                runOnUiThread { binding.tvStatus.text = "Connected, notify FAILED" }
+            }
         }
 
         @Suppress("DEPRECATION")
@@ -453,26 +603,24 @@ class MainActivity : AppCompatActivity() {
     private fun handleNotification(raw: ByteArray) {
         notifyCount++
         val logThisOne = binding.swLogNotifications.isChecked
-        if (logThisOne) log("notification #$notifyCount (${raw.size} bytes) raw: ${raw.toHex()}", "evt")
+        if (logThisOne) log("notification #$notifyCount (${raw.size} bytes) raw: ${raw.toHex()}")
         val ki = keyIv ?: return
         try {
             val decrypted = decryptPayload(raw, ki.first, ki.second)
             if (logThisOne) log("  decrypted: ${decrypted.toHex()}")
-            // Decoding/rendering always runs, even with notification logging off —
-            // only the noisy per-notification log lines are what get suppressed.
-            tryHandleGen4Gyro(decrypted, logThisOne)
+            if (matchedGen == "Gen4") {
+                tryHandleGen4Event(decrypted, logThisOne)
+            }
         } catch (e: Exception) {
             if (logThisOne) log("  decrypt failed: ${e.message}", "warn")
         }
     }
 
     // -----------------------------------------------------------------------
-    // GYRO decoding (GAN Gen4 protocol only — matches the GAN12 ui Maglev
-    // used throughout this investigation). Event type 0xEC, quaternion as
-    // four 16-bit sign+15-bit-magnitude values (NOT plain two's complement),
-    // same bit layout as the already-validated web tool's protocol.js.
-    // Other event types (MOVE/FACELETS/HARDWARE/BATTERY) are left as raw/
-    // decrypted hex only, same as before — this only adds GYRO -> CubeView.
+    // Gen4 event decoding (GYRO/MOVE/FACELETS) — same bit layout as the
+    // already-validated web tool's protocol.js. Scoped to Gen4 only (the
+    // GAN12 ui Maglev used throughout this investigation); Gen2/Gen3 use a
+    // different byte layout entirely and are not decoded here.
     // -----------------------------------------------------------------------
 
     private fun decodeSignMag16(raw: Int): Float {
@@ -481,27 +629,100 @@ class MainActivity : AppCompatActivity() {
         return sign * magnitude
     }
 
+    private fun quatMultiply(a: Quat, b: Quat): Quat = Quat(
+        x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+    )
+
+    private fun quatConjugate(q: Quat): Quat = Quat(-q.x, -q.y, -q.z, q.w)
+
+    private fun tryHandleGen4Event(decrypted: ByteArray, logThisOne: Boolean) {
+        if (decrypted.isEmpty()) return
+        val eventType = decrypted[0].toInt() and 0xFF
+        when (eventType) {
+            0xEC -> tryHandleGen4Gyro(decrypted, logThisOne)
+            0x01 -> tryHandleGen4Move(decrypted, logThisOne)
+            0xED -> tryHandleGen4Facelets(decrypted, logThisOne)
+        }
+    }
+
     private fun tryHandleGen4Gyro(decrypted: ByteArray, logThisOne: Boolean) {
         if (decrypted.size < 12) return
-        if ((decrypted[0].toInt() and 0xFF) != 0xEC) return // not a GYRO packet
-
         fun u16(offset: Int): Int =
             ((decrypted[offset].toInt() and 0xFF) shl 8) or (decrypted[offset + 1].toInt() and 0xFF)
 
-        val qw = decodeSignMag16(u16(2))
-        val qx = decodeSignMag16(u16(4))
-        val qy = decodeSignMag16(u16(6))
-        val qz = decodeSignMag16(u16(8))
-        if (logThisOne) {
-            log("  GYRO quaternion x=${"%.3f".format(qx)} y=${"%.3f".format(qy)} z=${"%.3f".format(qz)} w=${"%.3f".format(qw)}")
+        val raw = Quat(
+            x = decodeSignMag16(u16(4)),
+            y = decodeSignMag16(u16(6)),
+            z = decodeSignMag16(u16(8)),
+            w = decodeSignMag16(u16(2))
+        )
+        var basis = gyroBasis
+        if (basis == null) {
+            basis = quatConjugate(raw)
+            gyroBasis = basis
         }
-        binding.cubeView.setQuaternion(qx, qy, qz, qw)
+        val display = quatMultiply(basis, raw)
+        if (logThisOne) {
+            log("  GYRO quaternion x=${"%.3f".format(raw.x)} y=${"%.3f".format(raw.y)} z=${"%.3f".format(raw.z)} w=${"%.3f".format(raw.w)}")
+        }
+        binding.cubeView.setQuaternion(display.x, display.y, display.z, display.w)
+    }
+
+    private fun tryHandleGen4Move(decrypted: ByteArray, logThisOne: Boolean) {
+        if (decrypted.size < 9) return
+        if (!cubeStateSynced) return // mirror the web tool: ignore moves before the first FACELETS sync
+        val b8 = decrypted[8].toInt() and 0xFF
+        val direction = (b8 ushr 6) and 0x3
+        val faceCode = b8 and 0x3F
+        val faceCodes = intArrayOf(2, 32, 8, 1, 16, 4)
+        val face = faceCodes.indexOf(faceCode)
+        if (face < 0) return
+
+        cubeState = applyMove(cubeState, face, direction)
+        val facelets = toKociembaFacelets(cubeState.cp, cubeState.co, cubeState.ep, cubeState.eo)
+        binding.cubeView.setFacelets(facelets)
+        if (logThisOne) {
+            val moveStr = "URFDLB"[face].toString() + (if (direction == 1) "'" else "")
+            log("  MOVE: $moveStr -> $facelets")
+        }
+    }
+
+    private fun tryHandleGen4Facelets(decrypted: ByteArray, logThisOne: Boolean) {
+        if (decrypted.size < 16) return
+        val serial = (decrypted[2].toInt() and 0xFF) or ((decrypted[3].toInt() and 0xFF) shl 8)
+        val bits = decrypted.joinToString("") { (it.toInt() and 0xFF).toString(2).padStart(8, '0') }
+        fun bitWord(start: Int, len: Int): Int = bits.substring(start, start + len).toInt(2)
+
+        val cp = IntArray(8); val co = IntArray(8)
+        for (i in 0 until 7) {
+            cp[i] = bitWord(32 + i * 3, 3)
+            co[i] = bitWord(53 + i * 2, 2)
+        }
+        cp[7] = 28 - cp.take(7).sum()
+        co[7] = (3 - (co.take(7).sum() % 3)) % 3
+
+        val ep = IntArray(12); val eo = IntArray(12)
+        for (i in 0 until 11) {
+            ep[i] = bitWord(69 + i * 4, 4)
+            eo[i] = bitWord(113 + i, 1)
+        }
+        ep[11] = 66 - ep.take(11).sum()
+        eo[11] = (2 - (eo.take(11).sum() % 2)) % 2
+
+        cubeState = CubeState(cp, co, ep, eo)
+        cubeStateSynced = true
+        val facelets = toKociembaFacelets(cp, co, ep, eo)
+        binding.cubeView.setFacelets(facelets)
+        if (logThisOne) log("  FACELETS sync serial=$serial -> $facelets")
     }
 
     // -----------------------------------------------------------------------
-    // AES decryption (same scheme as the web tool: AES-128-CBC, key/iv salted
-    // with reversed MAC bytes, first+last 16-byte chunk each decrypted
-    // independently with a fresh cipher keyed only by key/iv)
+    // AES encryption/decryption (same scheme as the web tool: AES-128-CBC,
+    // key/iv salted with reversed MAC bytes, first+last 16-byte chunk each
+    // (en/de)crypted independently with a fresh cipher keyed only by key/iv)
     // -----------------------------------------------------------------------
 
     private fun macToBytes(mac: String): ByteArray =
@@ -534,6 +755,22 @@ class MainActivity : AppCompatActivity() {
         return result
     }
 
+    private fun encryptChunk(key: ByteArray, iv: ByteArray, data: ByteArray, offset: Int) {
+        val cipher = Cipher.getInstance("AES/CBC/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        val chunk = data.copyOfRange(offset, offset + 16)
+        val encrypted = cipher.doFinal(chunk)
+        System.arraycopy(encrypted, 0, data, offset, 16)
+    }
+
+    private fun encryptPayload(data: ByteArray, key: ByteArray, iv: ByteArray): ByteArray {
+        if (data.size < 16) throw IllegalArgumentException("payload shorter than 16 bytes")
+        val result = data.copyOf()
+        encryptChunk(key, iv, result, 0)
+        if (result.size > 16) encryptChunk(key, iv, result, result.size - 16)
+        return result
+    }
+
     // -----------------------------------------------------------------------
     // Small helpers
     // -----------------------------------------------------------------------
@@ -558,47 +795,12 @@ class MainActivity : AppCompatActivity() {
         else -> "UNKNOWN($state)"
     }
 
-    private fun copyLogToClipboard() {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("log", logBuffer.toString()))
-        Toast.makeText(this, "Log copied", Toast.LENGTH_SHORT).show()
-    }
-
     private fun log(msg: String, level: String = "info") {
-        Log.d("GanBleNativeTest", msg)
-        // New formatter per call, not a shared instance: SimpleDateFormat isn't
-        // thread-safe, and log() is called from multiple BLE callback threads.
-        val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
-        val tag = if (level == "info") "" else "[${level.uppercase()}] "
-        val line = "[$ts] $tag$msg\n"
-        runOnUiThread {
-            // Buffer bookkeeping (for Copy log and the memory cap) always happens,
-            // regardless of whether it's actually rendered on screen — Logcat above
-            // already received this line unconditionally too.
-            logBuffer.append(line)
-            logLineCount++
-            val trimmed = logLineCount > 4000
-            if (trimmed) {
-                val keepFrom = logBuffer.length / 3
-                logBuffer.delete(0, keepFrom)
-            }
-
-            if (!binding.swShowInApp.isChecked) return@runOnUiThread
-
-            if (trimmed) {
-                // Rare (every 4000 lines): one full resync of the TextView to match
-                // the trimmed buffer. This is the only place we pay for a full
-                // re-render — every other call below is a cheap append().
-                binding.tvLog.text = logBuffer.toString()
-            } else {
-                // TextView.append() extends the existing layout incrementally instead
-                // of re-measuring/re-rendering the whole accumulated text on every
-                // call — assigning tvLog.text = logBuffer.toString() here instead
-                // is what caused the app to get progressively slower under a high
-                // notification rate (GYRO can fire many times a second).
-                binding.tvLog.append(line)
-            }
-            binding.scrollLog.post { binding.scrollLog.fullScroll(View.FOCUS_DOWN) }
+        when (level) {
+            "error" -> Log.e("GanBleNativeTest", msg)
+            "warn" -> Log.w("GanBleNativeTest", msg)
+            "ok" -> Log.i("GanBleNativeTest", msg)
+            else -> Log.d("GanBleNativeTest", msg)
         }
     }
 }

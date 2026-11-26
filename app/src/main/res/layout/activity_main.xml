@@ -5,177 +5,154 @@
     android:orientation="vertical"
     android:padding="12dp">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="GAN BLE Native Test"
-        android:textSize="18sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="8dp"
-        android:text="Connects directly via BluetoothGatt to test native-only BLE controls against the hang/stall seen over Web Bluetooth. Scan to see every nearby BLE device (not just GAN ones) and tap one to fill in its MAC."
-        android:textSize="12sp" />
-
-    <Button
-        android:id="@+id/btnScan"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Scan for devices" />
-
-    <ListView
-        android:id="@+id/lvDevices"
-        android:layout_width="match_parent"
-        android:layout_height="140dp"
-        android:layout_marginTop="4dp"
-        android:layout_marginBottom="4dp" />
-
-    <EditText
-        android:id="@+id/etMac"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="Cube MAC address"
-        android:inputType="textCapCharacters"
-        android:text="FB:DD:7A:63:A3:20" />
-
+    <!-- Shown only while disconnected: everything needed to find/configure/connect. -->
     <LinearLayout
+        android:id="@+id/preConnectGroup"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="horizontal">
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="GAN BLE Native Test"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="Connects directly via BluetoothGatt to test native-only BLE controls against the hang/stall seen over Web Bluetooth. Scan to see every nearby BLE device (not just GAN ones) and tap one to fill in its MAC. Logs go to Android Studio's Logcat (tag GanBleNativeTest), not shown in-app."
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnScan"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Scan for devices" />
+
+        <ListView
+            android:id="@+id/lvDevices"
+            android:layout_width="match_parent"
+            android:layout_height="140dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="4dp" />
+
+        <EditText
+            android:id="@+id/etMac"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Cube MAC address"
+            android:inputType="textCapCharacters"
+            android:text="FB:DD:7A:63:A3:20" />
 
         <LinearLayout
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
 
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/swAutoConnect"
-                android:layout_width="match_parent"
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="autoConnect=true" />
+                android:layout_weight="1"
+                android:orientation="vertical">
 
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/swConnPriority"
-                android:layout_width="match_parent"
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/swAutoConnect"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="autoConnect=true" />
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/swConnPriority"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="requestConnectionPriority(HIGH)" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="requestConnectionPriority(HIGH)" />
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/swRefreshCache"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="gatt.refresh() before discovery" />
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/swRequestMtu"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="requestMtu(247)" />
+            </LinearLayout>
         </LinearLayout>
 
-        <LinearLayout
-            android:layout_width="0dp"
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/swLogNotifications"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/swRefreshCache"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="gatt.refresh() before discovery" />
-
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/swRequestMtu"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="requestMtu(247)" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
+            android:checked="true"
+            android:text="Log every notification to Logcat (turn off if that's too noisy at a high notification rate)" />
 
         <Button
             android:id="@+id/btnConnect"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:layout_marginTop="8dp"
             android:text="Connect" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Disconnected"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Shown only once connected and notifications are enabled. -->
+    <LinearLayout
+        android:id="@+id/postConnectGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:orientation="horizontal"
+        android:visibility="gone">
 
         <Button
             android:id="@+id/btnDisconnect"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:enabled="false"
             android:text="Disconnect" />
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="Disconnected"
-        android:textStyle="bold" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:orientation="horizontal">
 
         <Button
-            android:id="@+id/btnCopy"
+            android:id="@+id/btnResetGyro"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Copy log" />
+            android:text="Reset gyro" />
 
         <Button
-            android:id="@+id/btnClear"
+            android:id="@+id/btnResetCube"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Clear log" />
+            android:text="Reset cube" />
     </LinearLayout>
-
-    <com.google.android.material.switchmaterial.SwitchMaterial
-        android:id="@+id/swLogNotifications"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:checked="true"
-        android:text="Log every notification (turn off if the app gets slow under a high notification rate)" />
-
-    <com.google.android.material.switchmaterial.SwitchMaterial
-        android:id="@+id/swShowInApp"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:checked="true"
-        android:text="Display log in this app (always goes to Android Studio Logcat regardless — tag GanBleNativeTest — and Copy log still works either way)" />
 
     <com.corentinlimier.ganblenativetest.CubeView
         android:id="@+id/cubeView"
         android:layout_width="match_parent"
-        android:layout_height="160dp"
-        android:layout_marginTop="8dp" />
-
-    <ScrollView
-        android:id="@+id/scrollLog"
-        android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginTop="8dp"
-        android:layout_weight="1"
-        android:background="#000000">
-
-        <TextView
-            android:id="@+id/tvLog"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:padding="6dp"
-            android:textColor="#C9F2D6"
-            android:textIsSelectable="true"
-            android:textSize="11sp" />
-    </ScrollView>
+        android:layout_weight="1" />
 
 </LinearLayout>
