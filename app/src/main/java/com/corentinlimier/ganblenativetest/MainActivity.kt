@@ -445,14 +445,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleNotification(raw: ByteArray) {
         notifyCount++
-        log("notification #$notifyCount (${raw.size} bytes) raw: ${raw.toHex()}", "evt")
+        val logThisOne = binding.swLogNotifications.isChecked
+        if (logThisOne) log("notification #$notifyCount (${raw.size} bytes) raw: ${raw.toHex()}", "evt")
         val ki = keyIv ?: return
         try {
             val decrypted = decryptPayload(raw, ki.first, ki.second)
-            log("  decrypted: ${decrypted.toHex()}")
-            tryHandleGen4Gyro(decrypted)
+            if (logThisOne) log("  decrypted: ${decrypted.toHex()}")
+            // Decoding/rendering always runs, even with notification logging off —
+            // only the noisy per-notification log lines are what get suppressed.
+            tryHandleGen4Gyro(decrypted, logThisOne)
         } catch (e: Exception) {
-            log("  decrypt failed: ${e.message}", "warn")
+            if (logThisOne) log("  decrypt failed: ${e.message}", "warn")
         }
     }
 
@@ -471,7 +474,7 @@ class MainActivity : AppCompatActivity() {
         return sign * magnitude
     }
 
-    private fun tryHandleGen4Gyro(decrypted: ByteArray) {
+    private fun tryHandleGen4Gyro(decrypted: ByteArray, logThisOne: Boolean) {
         if (decrypted.size < 12) return
         if ((decrypted[0].toInt() and 0xFF) != 0xEC) return // not a GYRO packet
 
@@ -482,7 +485,9 @@ class MainActivity : AppCompatActivity() {
         val qx = decodeSignMag16(u16(4))
         val qy = decodeSignMag16(u16(6))
         val qz = decodeSignMag16(u16(8))
-        log("  GYRO quaternion x=${"%.3f".format(qx)} y=${"%.3f".format(qy)} z=${"%.3f".format(qz)} w=${"%.3f".format(qw)}")
+        if (logThisOne) {
+            log("  GYRO quaternion x=${"%.3f".format(qx)} y=${"%.3f".format(qy)} z=${"%.3f".format(qz)} w=${"%.3f".format(qw)}")
+        }
         binding.cubeView.setQuaternion(qx, qy, qz, qw)
     }
 
@@ -563,10 +568,20 @@ class MainActivity : AppCompatActivity() {
             logBuffer.append(line)
             logLineCount++
             if (logLineCount > 4000) {
+                // Rare (every 4000 lines): trim the history buffer, then do ONE full
+                // resync of the TextView to match it. This is the only place we pay
+                // for a full re-render — every other call below is a cheap append().
                 val keepFrom = logBuffer.length / 3
                 logBuffer.delete(0, keepFrom)
+                binding.tvLog.text = logBuffer.toString()
+            } else {
+                // TextView.append() extends the existing layout incrementally instead
+                // of re-measuring/re-rendering the whole accumulated text on every
+                // call — assigning tvLog.text = logBuffer.toString() here instead
+                // is what caused the app to get progressively slower under a high
+                // notification rate (GYRO can fire many times a second).
+                binding.tvLog.append(line)
             }
-            binding.tvLog.text = logBuffer.toString()
             binding.scrollLog.post { binding.scrollLog.fullScroll(View.FOCUS_DOWN) }
         }
     }
