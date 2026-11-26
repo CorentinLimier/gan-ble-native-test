@@ -197,7 +197,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         /** direction: 0 = CW (one quarter turn), 1 = CCW (applied as three CW turns). */
-        fun applyMove(state: CubeState, face: Int, direction: Int): CubeState {
+        private fun applyMove(state: CubeState, face: Int, direction: Int): CubeState {
             var result = state
             val times = if (direction == 0) 1 else 3
             repeat(times) { result = applyMoveOnce(result, face) }
