@@ -15,7 +15,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.text.format.DateFormat
+import java.text.SimpleDateFormat
+import java.util.Locale
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -394,7 +395,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun log(msg: String, level: String = "info") {
         Log.d("GanBleNativeTest", msg)
-        val ts = DateFormat.format("HH:mm:ss.SSS", Date()).toString()
+        // New formatter per call, not a shared instance: SimpleDateFormat isn't
+        // thread-safe, and log() is called from multiple BLE callback threads.
+        val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
         val tag = if (level == "info") "" else "[${level.uppercase()}] "
         val line = "[$ts] $tag$msg\n"
         runOnUiThread {
