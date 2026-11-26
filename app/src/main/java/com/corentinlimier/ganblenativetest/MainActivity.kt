@@ -233,6 +233,11 @@ class MainActivity : AppCompatActivity() {
                     binding.tvStatus.text = "Connected — discovering…"
                     binding.btnDisconnect.isEnabled = true
 
+                    // refresh()/requestConnectionPriority() have no async callback — safe to
+                    // call back-to-back. requestMtu() DOES have one (onMtuChanged), and
+                    // Android's single-operation-at-a-time GATT queue can silently drop a
+                    // discoverServices() call issued while an MTU negotiation is still in
+                    // flight — so defer it to onMtuChanged below instead of firing it here.
                     if (binding.swRefreshCache.isChecked) {
                         log("gatt.refresh() -> ${refreshGattCache(gatt)}")
                     }
@@ -241,8 +246,9 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (binding.swRequestMtu.isChecked) {
                         log("requestMtu(247) requested -> ${gatt.requestMtu(247)} (result via onMtuChanged)")
+                    } else {
+                        gatt.discoverServices()
                     }
-                    gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     binding.tvStatus.text = "Disconnected"
@@ -252,8 +258,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        @SuppressLint("MissingPermission")
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             log("onMtuChanged mtu=$mtu status=$status")
+            // Only call gatt here, now that the MTU request has actually completed —
+            // see the comment in onConnectionStateChange for why this is deferred here.
+            if (binding.swRequestMtu.isChecked) {
+                gatt.discoverServices()
+            }
         }
 
         @Suppress("DEPRECATION")
