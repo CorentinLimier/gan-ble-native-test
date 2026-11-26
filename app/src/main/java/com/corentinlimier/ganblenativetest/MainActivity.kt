@@ -145,6 +145,13 @@ class MainActivity : AppCompatActivity() {
             logBuffer.clear(); logLineCount = 0; binding.tvLog.text = ""
         }
         binding.btnCopy.setOnClickListener { copyLogToClipboard() }
+        binding.swShowInApp.setOnCheckedChangeListener { _, isChecked ->
+            // Catch up the TextView with whatever accumulated while display was off.
+            if (isChecked) {
+                binding.tvLog.text = logBuffer.toString()
+                binding.scrollLog.post { binding.scrollLog.fullScroll(View.FOCUS_DOWN) }
+            }
+        }
 
         log("Ready. Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), device: ${Build.MODEL}")
     }
@@ -565,14 +572,23 @@ class MainActivity : AppCompatActivity() {
         val tag = if (level == "info") "" else "[${level.uppercase()}] "
         val line = "[$ts] $tag$msg\n"
         runOnUiThread {
+            // Buffer bookkeeping (for Copy log and the memory cap) always happens,
+            // regardless of whether it's actually rendered on screen — Logcat above
+            // already received this line unconditionally too.
             logBuffer.append(line)
             logLineCount++
-            if (logLineCount > 4000) {
-                // Rare (every 4000 lines): trim the history buffer, then do ONE full
-                // resync of the TextView to match it. This is the only place we pay
-                // for a full re-render — every other call below is a cheap append().
+            val trimmed = logLineCount > 4000
+            if (trimmed) {
                 val keepFrom = logBuffer.length / 3
                 logBuffer.delete(0, keepFrom)
+            }
+
+            if (!binding.swShowInApp.isChecked) return@runOnUiThread
+
+            if (trimmed) {
+                // Rare (every 4000 lines): one full resync of the TextView to match
+                // the trimmed buffer. This is the only place we pay for a full
+                // re-render — every other call below is a cheap append().
                 binding.tvLog.text = logBuffer.toString()
             } else {
                 // TextView.append() extends the existing layout incrementally instead

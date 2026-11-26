@@ -146,6 +146,13 @@
         android:checked="true"
         android:text="Log every notification (turn off if the app gets slow under a high notification rate)" />
 
+    <com.google.android.material.switchmaterial.SwitchMaterial
+        android:id="@+id/swShowInApp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:checked="true"
+        android:text="Display log in this app (always goes to Android Studio Logcat regardless — tag GanBleNativeTest — and Copy log still works either way)" />
+
     <com.corentinlimier.ganblenativetest.CubeView
         android:id="@+id/cubeView"
         android:layout_width="match_parent"
