@@ -68,10 +68,13 @@ probabilistic, sometimes failing many attempts in a row.
   operate (and incidentally matching the "skip scanning" test already
   ruled out in the web investigation, so a direct-MAC connect isn't
   re-testing that).
-- No full protocol decoding (moves/facelets/gyro) — only raw + AES-decrypted
-  bytes per notification. The question here is "does the link carry data
-  at all", not "is the data correct"; full decoding already exists in the
-  web tool if that's ever needed natively.
+- No full protocol decoding — only raw + AES-decrypted bytes per
+  notification, plus one exception: GYRO events (GAN Gen4 only) are decoded
+  into a quaternion and rendered as a rotating wireframe cube above the log,
+  since that's a quick, visual way to confirm the live connection is
+  tracking the physical cube's orientation correctly. MOVE/FACELETS/
+  HARDWARE/BATTERY are still raw/decrypted hex only — full decoding for
+  those already exists in the web tool if that's ever needed natively.
 - No pairing/bonding of any kind — matches the web tool and the cube's own
   design (it refuses OS-level pairing; see the investigation doc).
 
