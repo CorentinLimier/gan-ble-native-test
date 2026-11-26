@@ -139,6 +139,12 @@
             android:text="Clear log" />
     </LinearLayout>
 
+    <com.corentinlimier.ganblenativetest.CubeView
+        android:id="@+id/cubeView"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:layout_marginTop="8dp" />
+
     <ScrollView
         android:id="@+id/scrollLog"
         android:layout_width="match_parent"

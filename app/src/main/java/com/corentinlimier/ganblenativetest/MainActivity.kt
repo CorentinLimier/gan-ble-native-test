@@ -450,9 +450,40 @@ class MainActivity : AppCompatActivity() {
         try {
             val decrypted = decryptPayload(raw, ki.first, ki.second)
             log("  decrypted: ${decrypted.toHex()}")
+            tryHandleGen4Gyro(decrypted)
         } catch (e: Exception) {
             log("  decrypt failed: ${e.message}", "warn")
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // GYRO decoding (GAN Gen4 protocol only — matches the GAN12 ui Maglev
+    // used throughout this investigation). Event type 0xEC, quaternion as
+    // four 16-bit sign+15-bit-magnitude values (NOT plain two's complement),
+    // same bit layout as the already-validated web tool's protocol.js.
+    // Other event types (MOVE/FACELETS/HARDWARE/BATTERY) are left as raw/
+    // decrypted hex only, same as before — this only adds GYRO -> CubeView.
+    // -----------------------------------------------------------------------
+
+    private fun decodeSignMag16(raw: Int): Float {
+        val sign = if ((raw ushr 15) == 1) -1f else 1f
+        val magnitude = (raw and 0x7FFF).toFloat() / 0x7FFF
+        return sign * magnitude
+    }
+
+    private fun tryHandleGen4Gyro(decrypted: ByteArray) {
+        if (decrypted.size < 12) return
+        if ((decrypted[0].toInt() and 0xFF) != 0xEC) return // not a GYRO packet
+
+        fun u16(offset: Int): Int =
+            ((decrypted[offset].toInt() and 0xFF) shl 8) or (decrypted[offset + 1].toInt() and 0xFF)
+
+        val qw = decodeSignMag16(u16(2))
+        val qx = decodeSignMag16(u16(4))
+        val qy = decodeSignMag16(u16(6))
+        val qz = decodeSignMag16(u16(8))
+        log("  GYRO quaternion x=${"%.3f".format(qx)} y=${"%.3f".format(qy)} z=${"%.3f".format(qz)} w=${"%.3f".format(qw)}")
+        binding.cubeView.setQuaternion(qx, qy, qz, qw)
     }
 
     // -----------------------------------------------------------------------
