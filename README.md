@@ -20,12 +20,18 @@ Web Bluetooth gives JavaScript no access to:
 - **`autoConnect` mode** (a different connection establishment path with its
   own internal retry/backoff)
 
-This app connects directly to the cube via `BluetoothGatt` (by MAC address,
-no scanning — same address every time, pre-filled with the one the web tool
-always extracts: `FB:DD:7A:63:A3:20`) with each of the above as an
-independent on/off switch, then tries to enable notifications on the state
-characteristic exactly like the web tool does — the same operation that
-hangs there.
+This app connects directly to the cube via `BluetoothGatt` by MAC address
+(pre-filled with the one the web tool always extracts:
+`FB:DD:7A:63:A3:20`) with each of the above as an independent on/off
+switch, then tries to enable notifications on the state characteristic
+exactly like the web tool does — the same operation that hangs there.
+
+A **Scan for devices** button is also available if you want to find/verify
+a MAC address rather than typing one in — it shows every nearby BLE device
+(not filtered to GAN ones), live, with name/address/RSSI; tap a row to fill
+in the MAC field. This doubles as a native equivalent of the
+`chrome://bluetooth-internals` device list used earlier in the
+investigation to spot a cube advertising under more than one MAC address.
 
 **It is deliberately not automated with a retry loop.** Tap Connect, note
 whether it hangs or works, tap Disconnect, repeat — ideally ~10 times per
@@ -57,10 +63,11 @@ probabilistic, sometimes failing many attempts in a row.
 
 ## What it deliberately doesn't do
 
-- No scanning / no advertisement parsing — the MAC is typed in directly,
-  matching how a native app would normally operate (and incidentally
-  matching the "skip scanning" test already ruled out in the web
-  investigation, so this isn't re-testing that).
+- Scanning is optional, not the default path — you can type a known MAC
+  directly without ever scanning, matching how a native app would normally
+  operate (and incidentally matching the "skip scanning" test already
+  ruled out in the web investigation, so a direct-MAC connect isn't
+  re-testing that).
 - No full protocol decoding (moves/facelets/gyro) — only raw + AES-decrypted
   bytes per notification. The question here is "does the link carry data
   at all", not "is the data correct"; full decoding already exists in the
