@@ -123,30 +123,45 @@
         android:id="@+id/postConnectGroup"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="8dp"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:visibility="gone">
 
-        <Button
-            android:id="@+id/btnDisconnect"
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Disconnect" />
+            android:orientation="horizontal">
 
-        <Button
-            android:id="@+id/btnResetGyro"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Reset gyro" />
+            <Button
+                android:id="@+id/btnDisconnect"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Disconnect" />
 
-        <Button
-            android:id="@+id/btnResetCube"
-            android:layout_width="0dp"
+            <Button
+                android:id="@+id/btnResetGyro"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset gyro" />
+
+            <Button
+                android:id="@+id/btnResetCube"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Reset cube" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvServiceInfo"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Reset cube" />
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="8dp"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <com.corentinlimier.ganblenativetest.CubeView

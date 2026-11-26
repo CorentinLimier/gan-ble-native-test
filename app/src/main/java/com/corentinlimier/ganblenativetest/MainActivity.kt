@@ -405,7 +405,10 @@ class MainActivity : AppCompatActivity() {
         cubeState = solvedCubeState()
         cubeStateSynced = false
         gyroBasis = null
-        runOnUiThread { binding.cubeView.setFacelets(CubeView.SOLVED_FACELETS) }
+        runOnUiThread {
+            binding.cubeView.setFacelets(CubeView.SOLVED_FACELETS)
+            binding.tvServiceInfo.text = ""
+        }
 
         val autoConnect = binding.swAutoConnect.isChecked
         log("connectGatt(autoConnect=$autoConnect, TRANSPORT_LE) to $mac …")
@@ -561,8 +564,16 @@ class MainActivity : AppCompatActivity() {
             }
             stateChar = sChar
             matchedGen = match.name
-            commandChar = service.getCharacteristic(UUID.fromString(match.command))
+            val cChar = service.getCharacteristic(UUID.fromString(match.command))
+            commandChar = cChar
             log("Matched ${match.name}. State characteristic properties: ${describeProps(sChar.properties)}")
+
+            val infoText = buildString {
+                append("Service (${match.name}): ${service.uuid}\n")
+                append("State char: ${sChar.uuid} [${describeProps(sChar.properties)}]")
+                if (cChar != null) append("\nCommand char: ${cChar.uuid} [${describeProps(cChar.properties)}]")
+            }
+            runOnUiThread { binding.tvServiceInfo.text = infoText }
 
             val notifEnabled = gatt.setCharacteristicNotification(sChar, true)
             log("setCharacteristicNotification(true) -> $notifEnabled")
