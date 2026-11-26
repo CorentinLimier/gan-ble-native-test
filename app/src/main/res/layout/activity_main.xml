@@ -16,8 +16,21 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginBottom="8dp"
-        android:text="Connects directly via BluetoothGatt (no scanning) to test native-only BLE controls against the hang/stall seen over Web Bluetooth."
+        android:text="Connects directly via BluetoothGatt to test native-only BLE controls against the hang/stall seen over Web Bluetooth. Scan to see every nearby BLE device (not just GAN ones) and tap one to fill in its MAC."
         android:textSize="12sp" />
+
+    <Button
+        android:id="@+id/btnScan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Scan for devices" />
+
+    <ListView
+        android:id="@+id/lvDevices"
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="4dp" />
 
     <EditText
         android:id="@+id/etMac"

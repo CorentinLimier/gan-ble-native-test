@@ -9,16 +9,22 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import java.text.SimpleDateFormat
 import java.util.Locale
 import android.util.Log
 import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -58,6 +64,15 @@ class MainActivity : AppCompatActivity() {
 
     private val logBuffer = StringBuilder()
     private var logLineCount = 0
+
+    private var pendingAction: (() -> Unit)? = null
+
+    private data class FoundDevice(val address: String, var name: String?, var rssi: Int)
+
+    private var scanning = false
+    private val scanHandler = Handler(Looper.getMainLooper())
+    private val foundDevices = LinkedHashMap<String, FoundDevice>()
+    private lateinit var deviceListAdapter: ArrayAdapter<String>
 
     companion object {
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -100,10 +115,11 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             if (results.values.all { it }) {
                 log("Permissions granted.", "ok")
-                doConnect()
+                pendingAction?.invoke()
             } else {
                 log("Permissions denied: $results", "error")
             }
+            pendingAction = null
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -111,6 +127,18 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        deviceListAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf())
+        binding.lvDevices.adapter = deviceListAdapter
+        binding.lvDevices.setOnItemClickListener { _, _, position, _ ->
+            val selected = foundDevices.values.sortedByDescending { it.rssi }.getOrNull(position)
+            if (selected != null) {
+                binding.etMac.setText(selected.address)
+                log("Selected from scan list: ${selected.name ?: "(unknown name)"}  ${selected.address}  ${selected.rssi} dBm", "ok")
+                if (scanning) stopScan()
+            }
+        }
+
+        binding.btnScan.setOnClickListener { onScanClicked() }
         binding.btnConnect.setOnClickListener { onConnectClicked() }
         binding.btnDisconnect.setOnClickListener { onDisconnectClicked() }
         binding.btnClear.setOnClickListener {
@@ -123,6 +151,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (scanning) stopScan()
         closeGatt()
     }
 
@@ -142,13 +171,100 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun onConnectClicked() {
+    private fun runWithPermissions(action: () -> Unit) {
         if (!hasPermissions()) {
+            pendingAction = action
             log("Requesting permissions: ${requiredPermissions().joinToString()}")
             requestPermissionLauncher.launch(requiredPermissions())
             return
         }
-        doConnect()
+        action()
+    }
+
+    private fun onConnectClicked() = runWithPermissions { doConnect() }
+
+    private fun onScanClicked() = runWithPermissions { toggleScan() }
+
+    // -----------------------------------------------------------------------
+    // Scanning (shows every nearby BLE device, not just GAN ones — useful to
+    // spot e.g. a cube advertising under more than one MAC address)
+    // -----------------------------------------------------------------------
+
+    @SuppressLint("MissingPermission")
+    private fun toggleScan() {
+        if (scanning) {
+            stopScan()
+            return
+        }
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = bluetoothManager.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            log("Bluetooth adapter not available or disabled.", "error")
+            return
+        }
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            log("BluetoothLeScanner unavailable (adapter off?).", "error")
+            return
+        }
+
+        if (bluetoothGatt != null) {
+            log("Note: scanning while a GATT connection is active — this is itself one of the things the web investigation tested (scanning right before connect), worth watching for any effect on the active connection.", "warn")
+        }
+
+        foundDevices.clear()
+        deviceListAdapter.clear()
+        log("Starting BLE scan for every nearby device (auto-stops after 15s)…")
+        scanning = true
+        binding.btnScan.text = "Stop scan"
+
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        scanner.startScan(null, settings, leScanCallback)
+        scanHandler.postDelayed({ if (scanning) stopScan() }, 15000)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopScan() {
+        if (!scanning) return
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothManager.adapter?.bluetoothLeScanner?.stopScan(leScanCallback)
+        scanning = false
+        binding.btnScan.text = "Scan for devices"
+        log("Scan stopped. ${foundDevices.size} distinct device(s) found.", "ok")
+    }
+
+    private val leScanCallback = object : ScanCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val address = result.device.address
+            val name = result.device.name ?: result.scanRecord?.deviceName
+            val existing = foundDevices[address]
+            if (existing == null) {
+                foundDevices[address] = FoundDevice(address, name, result.rssi)
+                log("Found device: ${name ?: "(unknown name)"}  $address  ${result.rssi} dBm", "evt")
+            } else {
+                existing.rssi = result.rssi
+                if (name != null) existing.name = name
+            }
+            refreshDeviceList()
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            log("BLE scan failed, errorCode=$errorCode", "error")
+            scanning = false
+            runOnUiThread { binding.btnScan.text = "Scan for devices" }
+        }
+    }
+
+    private fun refreshDeviceList() {
+        val lines = foundDevices.values.sortedByDescending { it.rssi }.map {
+            "${it.name ?: "(unknown name)"}   ${it.address}   ${it.rssi} dBm"
+        }
+        runOnUiThread {
+            deviceListAdapter.clear()
+            deviceListAdapter.addAll(lines)
+            deviceListAdapter.notifyDataSetChanged()
+        }
     }
 
     // -----------------------------------------------------------------------
